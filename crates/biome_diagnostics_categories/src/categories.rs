@@ -259,6 +259,7 @@ define_categories! {
     "lint/nursery/useBaseline": "https://biomejs.dev/linter/rules/use-baseline",
     "lint/nursery/useBiomeSuppressionComment": "https://biomejs.dev/linter/rules/use-biome-suppression-comment",
     "lint/nursery/useConsistentObjectDefinition": "https://biomejs.dev/linter/rules/use-consistent-object-definition",
+    "lint/nursery/noInconsistentPropertyInitValue": "https://biomejs.dev/linter/rules/no-inconsistent-property-init-value",
     "lint/nursery/useConsistentTestIt": "https://biomejs.dev/linter/rules/use-consistent-test-it",
     "lint/nursery/useDisposables": "https://biomejs.dev/linter/rules/use-disposables",
     "lint/nursery/useDomNodeTextContent": "https://biomejs.dev/linter/rules/use-dom-node-text-content",
