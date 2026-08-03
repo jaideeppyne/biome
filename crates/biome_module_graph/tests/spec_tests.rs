@@ -241,12 +241,13 @@ fn build_html_property_db(
         let end = start + script.len();
         let start = TextSize::from(start as u32);
         let range = TextRange::new(start, TextSize::from(end as u32));
-        let parse = biome_js_parser::parse(
+        let parse = biome_js_parser::parse_js_with_offset(
             script,
+            start,
             JsFileSource::js_module(),
             JsParserOptions::default(),
         );
-        embedded.push(HtmlEmbeddedContent::Js(parse.tree()));
+        embedded.push(HtmlEmbeddedContent::Js(parse.tree(), start));
         let source_index = db.insert_source(JsFileSource::js_module().into());
         snippets.push(ParsedSnippet::new(
             &db,
@@ -359,16 +360,31 @@ fn css_property_query_only_sees_preceding_siblings() {
 }
 
 #[test]
+fn css_property_query_only_sees_local_definitions_before_child_import() {
+    let db = build_css_property_db(&[
+        ("/leaf.css", ".leaf { color: var(--value); }"),
+        (
+            "/parent.css",
+            "@import \"leaf.css\";\n@property --value { syntax: \"<color>\"; inherits: true; initial-value: red; }",
+        ),
+    ]);
+    let module = db.module_for_path(Utf8Path::new("/leaf.css")).unwrap();
+    let property = SymbolFromModuleInfo::new(&db, "--value", module);
+
+    assert!(css_property_definitions(&db, property).is_empty());
+}
+
+#[test]
 fn css_property_query_preserves_parent_branches() {
     let db = build_css_property_db(&[
         ("/leaf.css", ".leaf { color: var(--value); }"),
         (
             "/first.css",
-            "@import \"leaf.css\";\n@property --value { syntax: \"<color>\"; inherits: true; initial-value: red; }",
+            "@property --value { syntax: \"<color>\"; inherits: true; initial-value: red; }\n@import \"leaf.css\";",
         ),
         (
             "/second.css",
-            "@import \"leaf.css\";\n@property --value { syntax: \"<color>\"; inherits: true; initial-value: red; }",
+            "@property --value { syntax: \"<color>\"; inherits: true; initial-value: red; }\n@import \"leaf.css\";",
         ),
     ]);
     let module = db.module_for_path(Utf8Path::new("/leaf.css")).unwrap();
@@ -390,11 +406,11 @@ fn css_property_query_stops_each_branch_at_nearest_parent() {
         ("/leaf.css", ".leaf { color: var(--value); }"),
         (
             "/theme.css",
-            "@import \"leaf.css\";\n@property --value { syntax: \"<color>\"; inherits: true; initial-value: red; }",
+            "@property --value { syntax: \"<color>\"; inherits: true; initial-value: red; }\n@import \"leaf.css\";",
         ),
         (
             "/app.css",
-            "@import \"theme.css\";\n@property --value { syntax: \"<length>\"; inherits: true; initial-value: 0px; }",
+            "@property --value { syntax: \"<length>\"; inherits: true; initial-value: 0px; }\n@import \"theme.css\";",
         ),
     ]);
     let module = db.module_for_path(Utf8Path::new("/leaf.css")).unwrap();
@@ -413,7 +429,7 @@ fn css_property_query_continues_through_empty_parents() {
         ("/theme.css", "@import \"leaf.css\";"),
         (
             "/app.css",
-            "@import \"theme.css\";\n@property --value { syntax: \"<length>\"; inherits: true; initial-value: 0px; }",
+            "@property --value { syntax: \"<length>\"; inherits: true; initial-value: 0px; }\n@import \"theme.css\";",
         ),
     ]);
     let module = db.module_for_path(Utf8Path::new("/leaf.css")).unwrap();
@@ -441,7 +457,7 @@ fn css_property_query_deduplicates_diamonds_and_stops_cycles() {
         ("/right.css", "@import \"leaf.css\";"),
         (
             "/root.css",
-            "@import \"left.css\";\n@import \"right.css\";\n@property --value { syntax: \"<color>\"; inherits: true; initial-value: red; }",
+            "@property --value { syntax: \"<color>\"; inherits: true; initial-value: red; }\n@import \"left.css\";\n@import \"right.css\";",
         ),
     ]);
     let module = db.module_for_path(Utf8Path::new("/leaf.css")).unwrap();
@@ -628,7 +644,34 @@ fn css_property_query_preserves_js_import_order() {
 }
 
 #[test]
-fn js_import_paths_are_deduplicated_at_the_last_occurrence() {
+fn css_property_query_preserves_duplicate_js_import_occurrences() {
+    let property_style =
+        r#"@property --value { syntax: "<color>"; inherits: true; initial-value: red; }"#;
+    let db = build_css_property_db(&[
+        ("/theme.css", property_style),
+        ("/leaf.css", ".leaf { color: var(--value); }"),
+    ]);
+    let fs = MemoryFileSystem::default();
+    fs.insert("/theme.css".into(), property_style);
+    fs.insert("/leaf.css".into(), ".leaf { color: var(--value); }");
+    fs.insert(
+        "/app.js".into(),
+        "import './theme.css'; import './leaf.css'; import './theme.css';",
+    );
+    let paths = [BiomePath::new("/app.js")];
+    let roots = get_added_js_paths(&fs, &paths);
+    add_js_modules(&db, &fs, &ProjectLayout::default(), &roots, false);
+
+    let module = db.module_for_path(Utf8Path::new("/leaf.css")).unwrap();
+    let property = SymbolFromModuleInfo::new(&db, "--value", module);
+    let definitions = css_property_definitions(&db, property);
+
+    assert_eq!(definitions.len(), 1);
+    assert_eq!(definitions[0].module_path, Utf8Path::new("/theme.css"));
+}
+
+#[test]
+fn js_import_paths_preserve_occurrences_and_summary_lookup() {
     fn assert_iterator<I>(_: I)
     where
         I: DoubleEndedIterator + ExactSizeIterator + std::iter::FusedIterator,
@@ -657,22 +700,36 @@ fn js_import_paths_are_deduplicated_at_the_last_occurrence() {
             .named_iter()
             .map(|(specifier, _)| specifier.text())
             .collect::<Vec<_>>(),
-        ["./second.css", "./first.css", "./third.css"]
+        [
+            "./first.css",
+            "./second.css",
+            "./second.css",
+            "./first.css",
+            "./first.css",
+            "./third.css",
+            "./third.css",
+        ]
     );
 
     let mut imports = info.import_paths.iter();
-    assert_eq!(imports.len(), 3);
+    assert_eq!(imports.len(), 7);
     let first = imports.next().unwrap();
+    assert_eq!(first.kind, JsImportKind::Static);
+    assert_eq!(first.phase, JsImportPhase::Default);
+    let last = imports.next_back().unwrap();
+    assert_eq!(last.kind, JsImportKind::Static);
+    assert_eq!(last.phase, JsImportPhase::Type);
+    assert_eq!(imports.len(), 5);
+
+    let first = info.import_paths.get("./first.css").unwrap();
     assert_eq!(first.kind, JsImportKind::StaticAndDynamic);
-    assert_eq!(first.phase, JsImportPhase::Type);
-    let third = imports.next_back().unwrap();
+    assert_eq!(first.phase, JsImportPhase::Default);
+    let second = info.import_paths.get("./second.css").unwrap();
+    assert_eq!(second.kind, JsImportKind::StaticAndDynamic);
+    assert_eq!(second.phase, JsImportPhase::Type);
+    let third = info.import_paths.get("./third.css").unwrap();
     assert_eq!(third.kind, JsImportKind::StaticAndDynamic);
     assert_eq!(third.phase, JsImportPhase::Type);
-    let second = imports.next().unwrap();
-    assert_eq!(second.kind, JsImportKind::StaticAndDynamic);
-    assert_eq!(second.phase, JsImportPhase::Default);
-    assert!(imports.next().is_none());
-    assert!(imports.next().is_none());
 }
 
 #[test]
@@ -926,7 +983,7 @@ fn css_property_query_only_exposes_global_html_importer_styles() {
         r#"@property --value { syntax: "<color>"; inherits: true; initial-value: red; }"#;
     let leaf = ".leaf { color: var(--value); }";
     let source =
-        format!("<link rel=\"stylesheet\" href=\"./leaf.css\"><style>{property_style}</style>");
+        format!("<style>{property_style}</style><link rel=\"stylesheet\" href=\"./leaf.css\">");
 
     let mut db = build_html_property_db(
         "/Global.vue",
@@ -957,6 +1014,20 @@ fn css_property_query_only_exposes_global_html_importer_styles() {
         &source,
         HtmlFileSource::vue(),
         &[(property_style, vue_scoped_css_source())],
+        &[],
+        &[("/leaf.css", leaf)],
+    );
+    let module = db.module_for_path(Utf8Path::new("/leaf.css")).unwrap();
+    let property = SymbolFromModuleInfo::new(&db, "--value", module);
+    assert!(css_property_definitions(&db, property).is_empty());
+
+    let source =
+        format!("<link rel=\"stylesheet\" href=\"./leaf.css\"><style>{property_style}</style>");
+    let db = build_html_property_db(
+        "/After.vue",
+        &source,
+        HtmlFileSource::vue(),
+        &[(property_style, vue_global_css_source())],
         &[],
         &[("/leaf.css", leaf)],
     );
@@ -1036,6 +1107,132 @@ fn css_property_query_preserves_html_script_import_order() {
 
     assert_eq!(definitions.len(), 1);
     assert_eq!(definitions[0].module_path, Utf8Path::new("/second.css"));
+}
+
+#[test]
+fn css_property_query_preserves_duplicate_html_script_import_occurrences() {
+    let property_style =
+        r#"@property --value { syntax: "<color>"; inherits: true; initial-value: red; }"#;
+    let script = "import './theme.css'; import './leaf.css'; import './theme.css';";
+    let source = format!("<script>{script}</script>");
+    let db = build_html_property_db(
+        "/index.html",
+        &source,
+        HtmlFileSource::html(),
+        &[],
+        &[script],
+        &[
+            ("/theme.css", property_style),
+            ("/leaf.css", ".leaf { color: var(--value); }"),
+        ],
+    );
+    let module = db.module_for_path(Utf8Path::new("/leaf.css")).unwrap();
+    let property = SymbolFromModuleInfo::new(&db, "--value", module);
+    let definitions = css_property_definitions(&db, property);
+
+    assert_eq!(definitions.len(), 1);
+    assert_eq!(definitions[0].module_path, Utf8Path::new("/theme.css"));
+}
+
+#[test]
+fn css_property_query_preserves_html_document_order() {
+    let inline = r#"@property --value { syntax: "<color>"; inherits: true; initial-value: red; }"#;
+    let linked = r#"@property --value { syntax: "<length>"; inherits: true; initial-value: 1px; }"#;
+    let script = "import './script.css';";
+    let cases = [
+        (
+            format!(
+                "<style>{inline}</style><script>{script}</script><link rel=\"stylesheet\" href=\"./linked.css\">"
+            ),
+            "/linked.css",
+        ),
+        (
+            format!(
+                "<link rel=\"stylesheet\" href=\"./linked.css\"><script>{script}</script><style>{inline}</style>"
+            ),
+            "/index.html",
+        ),
+        (
+            format!(
+                "<style>{inline}</style><link rel=\"stylesheet\" href=\"./linked.css\"><script>{script}</script>"
+            ),
+            "/script.css",
+        ),
+    ];
+
+    for (source, expected) in cases {
+        let db = build_html_property_db(
+            "/index.html",
+            &source,
+            HtmlFileSource::html(),
+            &[(inline, html_css_source())],
+            &[script],
+            &[("/linked.css", linked), ("/script.css", linked)],
+        );
+        let module = db.module_for_path(Utf8Path::new("/index.html")).unwrap();
+        let info = db
+            .html_module_info_for_path(Utf8Path::new("/index.html"))
+            .unwrap();
+        let linked_import = info.imported_stylesheets.first().unwrap();
+        let script_import = info.import_paths.iter().next().unwrap();
+        assert_eq!(
+            script_import.range.start() > linked_import.range.start(),
+            source.find("<script>").unwrap() > source.find("<link").unwrap(),
+            "{source}: linked {:?}, script {:?}",
+            linked_import.range,
+            script_import.range,
+        );
+        let property = SymbolFromModuleInfo::new(&db, "--value", module);
+        let definitions = css_property_definitions(&db, property);
+
+        assert_eq!(definitions.len(), 1, "{source}");
+        assert_eq!(
+            definitions[0].module_path,
+            Utf8Path::new(expected),
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn css_property_query_follows_imports_from_html_styles() {
+    let style = "@import './theme.css';";
+    let property_style =
+        r#"@property --value { syntax: "<color>"; inherits: true; initial-value: red; }"#;
+    let source = format!("<style>{style}</style>");
+    let db = build_html_property_db(
+        "/index.html",
+        &source,
+        HtmlFileSource::html(),
+        &[(style, html_css_source())],
+        &[],
+        &[("/theme.css", property_style)],
+    );
+    let module = db.module_for_path(Utf8Path::new("/index.html")).unwrap();
+    let property = SymbolFromModuleInfo::new(&db, "--value", module);
+    let definitions = css_property_definitions(&db, property);
+
+    assert_eq!(definitions.len(), 1);
+    assert_eq!(definitions[0].module_path, Utf8Path::new("/theme.css"));
+}
+
+#[test]
+fn css_property_query_does_not_expose_style_definition_after_child_import() {
+    let style = r#"@import './leaf.css';
+@property --value { syntax: "<color>"; inherits: true; initial-value: red; }"#;
+    let source = format!("<style>{style}</style>");
+    let db = build_html_property_db(
+        "/index.html",
+        &source,
+        HtmlFileSource::html(),
+        &[(style, html_css_source())],
+        &[],
+        &[("/leaf.css", ".leaf { color: var(--value); }")],
+    );
+    let module = db.module_for_path(Utf8Path::new("/leaf.css")).unwrap();
+    let property = SymbolFromModuleInfo::new(&db, "--value", module);
+
+    assert!(css_property_definitions(&db, property).is_empty());
 }
 
 #[test]
@@ -4815,7 +5012,10 @@ fn test_vue_upward_traversal() {
         JsFileSource::ts(),
         JsParserOptions::default(),
     );
-    let app_embedded = vec![HtmlEmbeddedContent::Js(app_script.tree())];
+    let app_embedded = vec![HtmlEmbeddedContent::Js(
+        app_script.tree(),
+        TextSize::default(),
+    )];
 
     let page_root = biome_html_parser::parse_html(
         r#"<template><div class="page"></div></template>"#,
@@ -4828,7 +5028,10 @@ fn test_vue_upward_traversal() {
         JsFileSource::ts(),
         JsParserOptions::default(),
     );
-    let page_embedded = vec![HtmlEmbeddedContent::Js(page_script.tree())];
+    let page_embedded = vec![HtmlEmbeddedContent::Js(
+        page_script.tree(),
+        TextSize::default(),
+    )];
 
     let button_root = biome_html_parser::parse_html(
         r#"<template><button class="btn-invalid">Bad class</button></template>"#,
