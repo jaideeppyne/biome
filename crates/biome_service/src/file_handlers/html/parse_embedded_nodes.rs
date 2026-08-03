@@ -24,7 +24,7 @@ use biome_languages::html::{HtmlTextExpressions, HtmlVariant};
 use biome_languages::javascript::{JsEmbeddingKind, SvelteEmbeddingKind, SvelteFileKind};
 use biome_languages::{CssFileSource, HtmlFileSource, JsFileSource, JsonFileSource};
 use biome_parser::AnyParse;
-use biome_rowan::{AstNode, AstNodeList, AstSeparatedList};
+use biome_rowan::{AstNode, AstNodeList, AstSeparatedList, TextRange};
 
 pub(crate) fn parse_embedded_nodes(params: ParseEmbeddedParams) -> ParseEmbedResult {
     let ParseEmbeddedParams {
@@ -48,6 +48,14 @@ pub(crate) fn parse_embedded_nodes(params: ParseEmbeddedParams) -> ParseEmbedRes
         host_file_source: &file_source,
         settings,
     };
+
+    for element in html_root.syntax().descendants() {
+        if let Some(attribute) = HtmlAttribute::cast_ref(&element)
+            && let Some(candidate) = build_inline_style_candidate(&attribute)
+        {
+            ctx.parse_and_push(&candidate, &doc_file_source, None, &mut nodes);
+        }
+    }
 
     match file_source.variant() {
         HtmlVariant::Standard(text_expression) => {
@@ -750,6 +758,33 @@ fn build_text_expression_candidate(expression: &HtmlTextExpression) -> Option<Em
     })
 }
 
+fn build_inline_style_candidate(attribute: &HtmlAttribute) -> Option<EmbedCandidate> {
+    let name = attribute.name().ok()?.value_token().ok()?;
+    if !name.text_trimmed().eq_ignore_ascii_case("style") {
+        return None;
+    }
+
+    let value = attribute.initializer()?.value().ok()?;
+    let value = value.as_html_string()?;
+    let token = value.value_token().ok()?;
+    let text = value.inner_string_text().ok()?;
+    let token_range = token.text_trimmed_range();
+    let quote_offset = matches!(token.text_trimmed().as_bytes().first(), Some(b'\'' | b'"'))
+        .then_some(TextSize::from(1))
+        .unwrap_or_default();
+    let content_offset = token_range.start().checked_add(quote_offset)?;
+    let content_range = TextRange::at(content_offset, TextSize::from(text.text().len() as u32));
+
+    Some(EmbedCandidate::InlineStyle {
+        content: EmbedContent {
+            element_range: attribute.range(),
+            content_range,
+            content_offset,
+            text,
+        },
+    })
+}
+
 /// Build an `EmbedCandidate::Element` from an `HtmlElement`.
 /// Returns `None` if the element has no embedded content or has multiple children (error).
 fn build_html_candidate(element: &HtmlElement) -> Option<EmbedCandidate> {
@@ -1032,6 +1067,7 @@ fn parse_matched_embed(
 
                     false
                 }
+                EmbedCandidate::InlineStyle { .. } => unreachable!(),
             };
 
             let doc_source = DocumentFileSource::Js(js_source);
@@ -1058,7 +1094,11 @@ fn parse_matched_embed(
         }
 
         GuestLanguage::Css => {
-            let css_source = embedded_css_file_source(ctx.host_file_source, candidate);
+            let css_source = if matches!(candidate, EmbedCandidate::InlineStyle { .. }) {
+                CssFileSource::css().with_embedding_kind(CssEmbeddingKind::Styled)
+            } else {
+                embedded_css_file_source(ctx.host_file_source, candidate)
+            };
             let doc_source = DocumentFileSource::Css(css_source);
             let mut options = ctx
                 .settings

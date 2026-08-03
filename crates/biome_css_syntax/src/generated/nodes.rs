@@ -9368,6 +9368,46 @@ pub struct CssValueAtRuleNamedImportSpecifierFields {
     pub local_name: SyntaxResult<CssIdentifier>,
 }
 #[derive(Clone, PartialEq, Eq, Hash)]
+pub struct CssValueRoot {
+    pub(crate) syntax: SyntaxNode,
+}
+impl CssValueRoot {
+    #[doc = r" Create an AstNode from a SyntaxNode without checking its kind"]
+    #[doc = r""]
+    #[doc = r" # Safety"]
+    #[doc = r" This function must be guarded with a call to [AstNode::can_cast]"]
+    #[doc = r" or a match on [SyntaxNode::kind]"]
+    #[inline]
+    pub const unsafe fn new_unchecked(syntax: SyntaxNode) -> Self {
+        Self { syntax }
+    }
+    pub fn as_fields(&self) -> CssValueRootFields {
+        CssValueRootFields {
+            items: self.items(),
+            eof_token: self.eof_token(),
+        }
+    }
+    pub fn items(&self) -> CssGenericComponentValueList {
+        support::list(&self.syntax, 0usize)
+    }
+    pub fn eof_token(&self) -> SyntaxResult<SyntaxToken> {
+        support::required_token(&self.syntax, 1usize)
+    }
+}
+impl Serialize for CssValueRoot {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        self.as_fields().serialize(serializer)
+    }
+}
+#[derive(Serialize)]
+pub struct CssValueRootFields {
+    pub items: CssGenericComponentValueList,
+    pub eof_token: SyntaxResult<SyntaxToken>,
+}
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct CssViewTransitionAtRule {
     pub(crate) syntax: SyntaxNode,
 }
@@ -16410,6 +16450,7 @@ impl AnyCssRelativeSelector {
 pub enum AnyCssRoot {
     CssRoot(CssRoot),
     CssSnippetRoot(CssSnippetRoot),
+    CssValueRoot(CssValueRoot),
 }
 impl AnyCssRoot {
     pub fn as_css_root(&self) -> Option<&CssRoot> {
@@ -16421,6 +16462,12 @@ impl AnyCssRoot {
     pub fn as_css_snippet_root(&self) -> Option<&CssSnippetRoot> {
         match &self {
             Self::CssSnippetRoot(item) => Some(item),
+            _ => None,
+        }
+    }
+    pub fn as_css_value_root(&self) -> Option<&CssValueRoot> {
+        match &self {
+            Self::CssValueRoot(item) => Some(item),
             _ => None,
         }
     }
@@ -29278,6 +29325,54 @@ impl From<CssValueAtRuleNamedImportSpecifier> for SyntaxNode {
 }
 impl From<CssValueAtRuleNamedImportSpecifier> for SyntaxElement {
     fn from(n: CssValueAtRuleNamedImportSpecifier) -> Self {
+        n.syntax.into()
+    }
+}
+impl AstNode for CssValueRoot {
+    type Language = Language;
+    const KIND_SET: SyntaxKindSet<Language> =
+        SyntaxKindSet::from_raw(RawSyntaxKind(CSS_VALUE_ROOT as u16));
+    fn can_cast(kind: SyntaxKind) -> bool {
+        kind == CSS_VALUE_ROOT
+    }
+    fn cast(syntax: SyntaxNode) -> Option<Self> {
+        if Self::can_cast(syntax.kind()) {
+            Some(Self { syntax })
+        } else {
+            None
+        }
+    }
+    fn syntax(&self) -> &SyntaxNode {
+        &self.syntax
+    }
+    fn into_syntax(self) -> SyntaxNode {
+        self.syntax
+    }
+}
+impl std::fmt::Debug for CssValueRoot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        thread_local! { static DEPTH : std :: cell :: Cell < u8 > = const { std :: cell :: Cell :: new (0) } };
+        let current_depth = DEPTH.get();
+        let result = if current_depth < 16 {
+            DEPTH.set(current_depth + 1);
+            f.debug_struct("CssValueRoot")
+                .field("items", &self.items())
+                .field("eof_token", &support::DebugSyntaxResult(self.eof_token()))
+                .finish()
+        } else {
+            f.debug_struct("CssValueRoot").finish()
+        };
+        DEPTH.set(current_depth);
+        result
+    }
+}
+impl From<CssValueRoot> for SyntaxNode {
+    fn from(n: CssValueRoot) -> Self {
+        n.syntax
+    }
+}
+impl From<CssValueRoot> for SyntaxElement {
+    fn from(n: CssValueRoot) -> Self {
         n.syntax.into()
     }
 }
@@ -42243,16 +42338,24 @@ impl From<CssSnippetRoot> for AnyCssRoot {
         Self::CssSnippetRoot(node)
     }
 }
+impl From<CssValueRoot> for AnyCssRoot {
+    fn from(node: CssValueRoot) -> Self {
+        Self::CssValueRoot(node)
+    }
+}
 impl AstNode for AnyCssRoot {
     type Language = Language;
-    const KIND_SET: SyntaxKindSet<Language> = CssRoot::KIND_SET.union(CssSnippetRoot::KIND_SET);
+    const KIND_SET: SyntaxKindSet<Language> = CssRoot::KIND_SET
+        .union(CssSnippetRoot::KIND_SET)
+        .union(CssValueRoot::KIND_SET);
     fn can_cast(kind: SyntaxKind) -> bool {
-        matches!(kind, CSS_ROOT | CSS_SNIPPET_ROOT)
+        matches!(kind, CSS_ROOT | CSS_SNIPPET_ROOT | CSS_VALUE_ROOT)
     }
     fn cast(syntax: SyntaxNode) -> Option<Self> {
         let res = match syntax.kind() {
             CSS_ROOT => Self::CssRoot(CssRoot { syntax }),
             CSS_SNIPPET_ROOT => Self::CssSnippetRoot(CssSnippetRoot { syntax }),
+            CSS_VALUE_ROOT => Self::CssValueRoot(CssValueRoot { syntax }),
             _ => return None,
         };
         Some(res)
@@ -42261,12 +42364,14 @@ impl AstNode for AnyCssRoot {
         match self {
             Self::CssRoot(it) => it.syntax(),
             Self::CssSnippetRoot(it) => it.syntax(),
+            Self::CssValueRoot(it) => it.syntax(),
         }
     }
     fn into_syntax(self) -> SyntaxNode {
         match self {
             Self::CssRoot(it) => it.into_syntax(),
             Self::CssSnippetRoot(it) => it.into_syntax(),
+            Self::CssValueRoot(it) => it.into_syntax(),
         }
     }
 }
@@ -42275,6 +42380,7 @@ impl std::fmt::Debug for AnyCssRoot {
         match self {
             Self::CssRoot(it) => std::fmt::Debug::fmt(it, f),
             Self::CssSnippetRoot(it) => std::fmt::Debug::fmt(it, f),
+            Self::CssValueRoot(it) => std::fmt::Debug::fmt(it, f),
         }
     }
 }
@@ -42283,6 +42389,7 @@ impl From<AnyCssRoot> for SyntaxNode {
         match n {
             AnyCssRoot::CssRoot(it) => it.into_syntax(),
             AnyCssRoot::CssSnippetRoot(it) => it.into_syntax(),
+            AnyCssRoot::CssValueRoot(it) => it.into_syntax(),
         }
     }
 }
@@ -48266,6 +48373,11 @@ impl std::fmt::Display for CssValueAtRuleImportSpecifier {
     }
 }
 impl std::fmt::Display for CssValueAtRuleNamedImportSpecifier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self.syntax(), f)
+    }
+}
+impl std::fmt::Display for CssValueRoot {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(self.syntax(), f)
     }

@@ -73,6 +73,9 @@ pub(crate) enum EmbedCandidate {
         is_event_handler: bool,
         is_class_attribute: bool,
     },
+    InlineStyle {
+        content: EmbedContent,
+    },
 }
 
 #[derive(Debug, Default)]
@@ -114,7 +117,8 @@ impl EmbedCandidate {
             Self::Element { content, .. }
             | Self::Frontmatter { content }
             | Self::TextExpression { content, .. }
-            | Self::Directive { content, .. } => content.clone(),
+            | Self::Directive { content, .. }
+            | Self::InlineStyle { content } => content.clone(),
         }
     }
 
@@ -192,6 +196,9 @@ enum EmbedDetector {
     Directive {
         target: EmbedTarget,
     },
+    InlineStyle {
+        target: EmbedTarget,
+    },
 }
 
 impl EmbedDetector {
@@ -215,6 +222,9 @@ impl EmbedDetector {
                 target.resolve(candidate, file_source)
             }
             (Self::Directive { target }, EmbedCandidate::Directive { .. }) => {
+                target.resolve(candidate, file_source)
+            }
+            (Self::InlineStyle { target }, EmbedCandidate::InlineStyle { .. }) => {
                 target.resolve(candidate, file_source)
             }
             _ => None,
@@ -243,7 +253,7 @@ impl EmbedTarget {
     }
 }
 
-static HTML_DETECTORS: [EmbedDetector; 5] = [
+static HTML_DETECTORS: [EmbedDetector; 6] = [
     EmbedDetector::Element {
         tag: "script",
         target: EmbedTarget::Dynamic {
@@ -272,6 +282,9 @@ static HTML_DETECTORS: [EmbedDetector; 5] = [
             resolver: resolve_directive_language,
             fallback: None,
         },
+    },
+    EmbedDetector::InlineStyle {
+        target: EmbedTarget::Static(GuestLanguage::Css),
     },
 ];
 

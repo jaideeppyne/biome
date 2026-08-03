@@ -10,6 +10,7 @@ impl FormatRule<AnyCssRoot> for FormatAnyCssRoot {
         match node {
             AnyCssRoot::CssRoot(node) => node.format().fmt(f),
             AnyCssRoot::CssSnippetRoot(node) => node.format().fmt(f),
+            AnyCssRoot::CssValueRoot(node) => node.format().fmt(f),
         }
     }
 }
