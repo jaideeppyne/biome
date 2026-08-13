@@ -11,6 +11,11 @@ b { font-family: serif; }
 b { font-family: sans-serif; }
 b { font-family: Courier, monospace; }
 b { font: 1em/1.5 "Whatever Fanciness", cursive; }
+/* CSS Fonts Level 4 generic families: https://drafts.csswg.org/css-fonts/#generic-family-value */
+math { font-family: math; }
+b { font-family: "STIX Two Math", math; }
+b { font-family: fangsong; }
+b { font-family: emoji; }
 a { font-family: Helvetica Neue, sans-serif, Apple Color Emoji; }
 @font-face { font-family: Gentium; }
 @FONT-FACE { font-family: Gentium; }
